@@ -2,7 +2,6 @@ package org.nunocky.speechrecognitionapistudy.ui.mic
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,51 +29,38 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.google.mlkit.genai.common.audio.AudioSource
-import com.google.mlkit.genai.speechrecognition.SpeechRecognition
-import com.google.mlkit.genai.speechrecognition.SpeechRecognizerOptions
-import com.google.mlkit.genai.speechrecognition.SpeechRecognizerRequest
-import com.google.mlkit.genai.speechrecognition.SpeechRecognizerResponse
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
+import androidx.lifecycle.viewmodel.compose.viewModel
 import org.nunocky.speechrecognitionapistudy.ui.component.ChatBubble
-import org.nunocky.speechrecognitionapistudy.ui.component.UIChatMessage
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SpeechRecognitionScreen(onBack: (() -> Unit)? = null) {
+fun SpeechRecognitionScreen(
+    onBack: (() -> Unit)? = null,
+    viewModel: SpeechRecognitionViewModel = viewModel()
+) {
     val context = LocalContext.current
-    var isListening by remember { mutableStateOf(false) }
-    var partialText by remember { mutableStateOf("") }
-    val messages = remember { mutableStateListOf<UIChatMessage>() }
-    val scope = rememberCoroutineScope()
-    var recognitionJob by remember { mutableStateOf<Job?>(null) }
+    val uiState by viewModel.uiState.collectAsState()
 
-    val speechRecognizer = remember {
-        val options = SpeechRecognizerOptions.Builder().apply {
-            locale = Locale.JAPAN
-        }.build()
-        SpeechRecognition.getClient(options)
-    }
-
-    DisposableEffect(speechRecognizer) {
-        onDispose {
-            speechRecognizer.close()
+    // 一度限りのイベント（エラー表示など）を収集
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is SpeechRecognitionUiEvent.ShowError -> {
+                    Toast.makeText(context, "エラー: ${event.message}", Toast.LENGTH_SHORT).show()
+                }
+                is SpeechRecognitionUiEvent.UnsupportedVersion -> {
+                    Toast.makeText(context, "この機能はAndroid 12以上で利用できます", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -82,83 +68,26 @@ fun SpeechRecognitionScreen(onBack: (() -> Unit)? = null) {
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            // Permission granted
+            viewModel.startListening()
         } else {
             Toast.makeText(context, "マイクの権限が必要です", Toast.LENGTH_SHORT).show()
         }
     }
 
-    fun startListening() {
-        if (ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            return
-        }
-
-        if (recognitionJob != null) return
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            Toast.makeText(context, "この機能はAndroid 12以上で利用できます", Toast.LENGTH_SHORT)
-                .show()
-            return
-        }
-
-        isListening = true
-        partialText = ""
-
-        val request = SpeechRecognizerRequest.Builder().apply {
-            audioSource = AudioSource.fromMic()
-        }.build()
-
-        recognitionJob = scope.launch {
-            try {
-                speechRecognizer.startRecognition(request).collect { response ->
-                    when (response) {
-                        is SpeechRecognizerResponse.PartialTextResponse -> {
-                            partialText = response.text
-                        }
-
-                        is SpeechRecognizerResponse.FinalTextResponse -> {
-                            messages.add(UIChatMessage(response.text))
-                            partialText = ""
-                        }
-
-                        is SpeechRecognizerResponse.ErrorResponse -> {
-                            Toast.makeText(
-                                context,
-                                "エラー: ${response.e.message}",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-
-                        is SpeechRecognizerResponse.CompletedResponse -> {
-                            isListening = false
-                            recognitionJob = null
-                        }
-                    }
-                }
-            } catch (e: CancellationException) {
-                // stopRecognitionによるキャンセル時は何もしない
-            } catch (e: Exception) {
-                Toast.makeText(context, "エラー: ${e.message}", Toast.LENGTH_SHORT).show()
-            } finally {
-                isListening = false
-                recognitionJob = null
+    fun onMicButtonClick() {
+        if (uiState.isListening) {
+            viewModel.stopListening()
+        } else {
+            if (ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.RECORD_AUDIO
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            } else {
+                viewModel.startListening()
             }
         }
-    }
-
-    fun stopListening() {
-        recognitionJob?.cancel()
-        recognitionJob = null
-        partialText = ""
-        scope.launch {
-            runCatching { speechRecognizer.stopRecognition() }
-        }
-        isListening = false
     }
 
     Scaffold(
@@ -179,26 +108,20 @@ fun SpeechRecognitionScreen(onBack: (() -> Unit)? = null) {
         },
         bottomBar = {
             Box(
-                modifier = Modifier.Companion
+                modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
                     .imePadding()
                     .padding(16.dp),
-                contentAlignment = Alignment.Companion.Center
+                contentAlignment = Alignment.Center
             ) {
                 FloatingActionButton(
-                    onClick = {
-                        if (isListening) {
-                            stopListening()
-                        } else {
-                            startListening()
-                        }
-                    },
+                    onClick = { onMicButtonClick() },
                     shape = CircleShape,
-                    containerColor = if (isListening) Color.Companion.Red else MaterialTheme.colorScheme.primary
+                    containerColor = if (uiState.isListening) Color.Red else MaterialTheme.colorScheme.primary
                 ) {
                     Icon(
-                        imageVector = if (isListening) Icons.Default.Stop else Icons.Default.Mic,
+                        imageVector = if (uiState.isListening) Icons.Default.Stop else Icons.Default.Mic,
                         contentDescription = "Microphone"
                     )
                 }
@@ -206,23 +129,23 @@ fun SpeechRecognitionScreen(onBack: (() -> Unit)? = null) {
         }
     ) { innerPadding ->
         Column(
-            modifier = Modifier.Companion
+            modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
             LazyColumn(
-                modifier = Modifier.Companion
+                modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(messages) { message ->
+                items(uiState.messages) { message ->
                     ChatBubble(message.text)
                 }
-                if (partialText.isNotBlank()) {
+                if (uiState.partialText.isNotBlank()) {
                     item {
-                        ChatBubble(partialText)
+                        ChatBubble(uiState.partialText)
                     }
                 }
             }
