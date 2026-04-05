@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Speech Recognition API Study</string>
+
+    <!-- Screen titles -->
+    <string name="screen_title_tts_mode_select">TTS Mode Selection</string>
+    <string name="screen_title_mic_to_tts">Mic to TTS</string>
+    <string name="screen_title_file_to_tts">File to TTS</string>
+
+    <!-- Button labels -->
+    <string name="button_mic_to_tts">Mic to TTS</string>
+    <string name="button_file_to_tts">File to TTS</string>
+    <string name="button_select_file">Select File</string>
+    <string name="button_start_recognition">Start Recognition</string>
+
+    <!-- Status labels -->
+    <string name="label_no_file_selected">No file selected</string>
+    <string name="label_recognition_placeholder">Recognition results will appear here</string>
+
+    <!-- Toast messages -->
+    <string name="toast_error_prefix">Error: %1$s</string>
+    <string name="toast_unsupported_version">This feature requires Android 12 or later</string>
+    <string name="toast_permission_denied">Microphone permission is required</string>
+    <string name="toast_no_file_selected">Please select a file</string>
+
+    <!-- Error fallback -->
+    <string name="error_unknown">An unknown error occurred</string>
+</resources>
+

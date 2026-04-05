@@ -271,7 +271,7 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create pipe: ${e.message}", e)
             viewModelScope.launch {
-                _events.emit(FileToTtsUiEvent.ShowError("ファイルを読み込めませんでした: ${e.message}"))
+                _events.emit(FileToTtsUiEvent.ShowError(e.message ?: ""))
             }
             return
         }
@@ -307,7 +307,7 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
 
                         is SpeechRecognizerResponse.ErrorResponse -> {
                             Log.e(TAG, "Recognition ErrorResponse: ${response.e.message}", response.e)
-                            _events.emit(FileToTtsUiEvent.ShowError(response.e.message ?: "Unknown error"))
+                            _events.emit(FileToTtsUiEvent.ShowError(response.e.message ?: ""))
                         }
 
                         is SpeechRecognizerResponse.CompletedResponse -> {
@@ -320,7 +320,7 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
                 Log.d(TAG, "Recognition cancelled (expected control flow)")
             } catch (e: Exception) {
                 Log.e(TAG, "Unexpected exception during recognition: ${e.message}", e)
-                _events.emit(FileToTtsUiEvent.ShowError(e.message ?: "Unknown error"))
+                _events.emit(FileToTtsUiEvent.ShowError(e.message ?: ""))
             } finally {
                 decoderJob.cancel()
                 runCatching { readFd.close() }

@@ -1,3 +1,27 @@
 <resources>
     <string name="app_name">Speech Recognition API Study</string>
+
+    <!-- Screen titles -->
+    <string name="screen_title_tts_mode_select">TTSモード選択</string>
+    <string name="screen_title_mic_to_tts">マイクからTTS</string>
+    <string name="screen_title_file_to_tts">ファイルからTTS</string>
+
+    <!-- Button labels -->
+    <string name="button_mic_to_tts">マイクからTTS</string>
+    <string name="button_file_to_tts">ファイルからTTS</string>
+    <string name="button_select_file">ファイルを選択</string>
+    <string name="button_start_recognition">認識開始</string>
+
+    <!-- Status labels -->
+    <string name="label_no_file_selected">ファイルが選択されていません</string>
+    <string name="label_recognition_placeholder">認識結果がここに表示されます</string>
+
+    <!-- Toast messages -->
+    <string name="toast_error_prefix">エラー: %1$s</string>
+    <string name="toast_unsupported_version">この機能はAndroid 12以上で利用できます</string>
+    <string name="toast_permission_denied">マイクの権限が必要です</string>
+    <string name="toast_no_file_selected">ファイルを選択してください</string>
+
+    <!-- Error fallback -->
+    <string name="error_unknown">不明なエラーが発生しました</string>
 </resources>

@@ -36,8 +36,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import org.nunocky.speechrecognitionapistudy.R
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.nunocky.speechrecognitionapistudy.ui.component.ChatBubble
 
@@ -55,10 +57,10 @@ fun SpeechRecognitionScreen(
         viewModel.events.collect { event ->
             when (event) {
                 is SpeechRecognitionUiEvent.ShowError -> {
-                    Toast.makeText(context, "エラー: ${event.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.toast_error_prefix, event.message), Toast.LENGTH_SHORT).show()
                 }
                 is SpeechRecognitionUiEvent.UnsupportedVersion -> {
-                    Toast.makeText(context, "この機能はAndroid 12以上で利用できます", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.toast_unsupported_version), Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -70,7 +72,7 @@ fun SpeechRecognitionScreen(
         if (isGranted) {
             viewModel.startListening()
         } else {
-            Toast.makeText(context, "マイクの権限が必要です", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.toast_permission_denied), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -93,7 +95,7 @@ fun SpeechRecognitionScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("マイクからTTS") },
+                title = { Text(stringResource(R.string.screen_title_mic_to_tts)) },
                 navigationIcon = {
                     onBack?.let {
                         IconButton(onClick = it) {

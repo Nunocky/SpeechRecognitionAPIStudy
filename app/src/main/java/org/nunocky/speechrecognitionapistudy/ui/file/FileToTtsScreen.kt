@@ -28,8 +28,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import org.nunocky.speechrecognitionapistudy.R
 import org.nunocky.speechrecognitionapistudy.ui.component.ChatBubble
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,14 +47,16 @@ fun FileToTtsScreen(
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
             when (event) {
-                is FileToTtsUiEvent.ShowError ->
-                    Toast.makeText(context, "エラー: ${event.message}", Toast.LENGTH_SHORT).show()
+                is FileToTtsUiEvent.ShowError -> {
+                    val cause = event.message.ifBlank { context.getString(R.string.error_unknown) }
+                    Toast.makeText(context, context.getString(R.string.toast_error_prefix, cause), Toast.LENGTH_SHORT).show()
+                }
 
                 FileToTtsUiEvent.UnsupportedVersion ->
-                    Toast.makeText(context, "この機能はAndroid 12以上で利用できます", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.toast_unsupported_version), Toast.LENGTH_SHORT).show()
 
                 FileToTtsUiEvent.NoFileSelected ->
-                    Toast.makeText(context, "ファイルを選択してください", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.toast_no_file_selected), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -66,7 +70,7 @@ fun FileToTtsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("ファイルからTTS") },
+                title = { Text(stringResource(R.string.screen_title_file_to_tts)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -87,7 +91,7 @@ fun FileToTtsScreen(
         ) {
             Text(
                 text = if (uiState.selectedFileName.isNotBlank()) uiState.selectedFileName
-                else "ファイルが選択されていません",
+                else stringResource(R.string.label_no_file_selected),
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -96,7 +100,7 @@ fun FileToTtsScreen(
                 enabled = !uiState.isProcessing,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("ファイルを選択")
+                Text(stringResource(R.string.button_select_file))
             }
 
             Button(
@@ -104,7 +108,7 @@ fun FileToTtsScreen(
                 enabled = !uiState.isProcessing,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("認識開始")
+                Text(stringResource(R.string.button_start_recognition))
             }
 
             if (uiState.isProcessing) {
@@ -122,7 +126,7 @@ fun FileToTtsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (uiState.messages.isEmpty() && uiState.partialText.isBlank()) {
-                    item { Text("認識結果がここに表示されます") }
+                    item { Text(stringResource(R.string.label_recognition_placeholder)) }
                 }
                 items(uiState.messages) { message ->
                     ChatBubble(message.text)

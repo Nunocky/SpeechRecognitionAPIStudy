@@ -15,6 +15,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import org.nunocky.speechrecognitionapistudy.R
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -24,7 +26,7 @@ fun StartupMenuScreen(
 ) {
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("TTSモード選択") })
+            TopAppBar(title = { Text(stringResource(R.string.screen_title_tts_mode_select)) })
         }
     ) { innerPadding ->
         Column(
@@ -40,7 +42,7 @@ fun StartupMenuScreen(
                 onClick = onMicToTtsClick,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("マイクからTTS")
+                Text(stringResource(R.string.button_mic_to_tts))
             }
             Button(
                 onClick = onFileToTtsClick,
@@ -48,7 +50,7 @@ fun StartupMenuScreen(
                     .fillMaxWidth()
                     .padding(top = 12.dp)
             ) {
-                Text("ファイルからTTS")
+                Text(stringResource(R.string.button_file_to_tts))
             }
         }
     }
