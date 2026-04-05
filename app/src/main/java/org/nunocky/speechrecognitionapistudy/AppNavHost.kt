@@ -4,6 +4,9 @@ import androidx.compose.runtime.Composable
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import org.nunocky.speechrecognitionapistudy.ui.file.FileToTtsScreen
+import org.nunocky.speechrecognitionapistudy.ui.main.StartupMenuScreen
+import org.nunocky.speechrecognitionapistudy.ui.mic.SpeechRecognitionScreen
 
 private object AppRoute {
     const val Menu = "menu"

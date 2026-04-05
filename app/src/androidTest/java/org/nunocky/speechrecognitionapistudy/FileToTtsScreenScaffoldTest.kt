@@ -8,6 +8,7 @@ import androidx.compose.ui.test.performClick
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.nunocky.speechrecognitionapistudy.ui.file.FileToTtsScreen
 
 /**
  * Compose UI tests for Task 1.1 — FileToTtsScreen scaffold and back navigation.

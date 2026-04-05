@@ -3,6 +3,7 @@ package org.nunocky.speechrecognitionapistudy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Test
+import org.nunocky.speechrecognitionapistudy.ui.component.UIChatMessage
 
 /**
  * Unit tests for file-to-tts feature — pure JVM (no Android/ML Kit dependency needed).

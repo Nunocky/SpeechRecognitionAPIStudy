@@ -1,4 +1,4 @@
-package org.nunocky.speechrecognitionapistudy
+package org.nunocky.speechrecognitionapistudy.ui.main
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column

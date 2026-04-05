@@ -1,4 +1,4 @@
-package org.nunocky.speechrecognitionapistudy
+package org.nunocky.speechrecognitionapistudy.ui.file
 
 import android.content.Context
 import android.media.MediaCodec
@@ -51,6 +51,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import org.nunocky.speechrecognitionapistudy.ui.component.ChatBubble
+import org.nunocky.speechrecognitionapistudy.ui.component.UIChatMessage
 import java.io.FileOutputStream
 import java.util.Locale
 
@@ -101,7 +103,7 @@ private fun convertToTargetPcm(
     if (inputSampleRate == targetSampleRate) {
         val out = ByteArray(mono.size * 2)
         mono.forEachIndexed { i, s ->
-            out[i * 2]     = (s.toInt() and 0xFF).toByte()
+            out[i * 2] = (s.toInt() and 0xFF).toByte()
             out[i * 2 + 1] = (s.toInt() shr 8 and 0xFF).toByte()
         }
         return out
@@ -113,11 +115,11 @@ private fun convertToTargetPcm(
     for (i in 0 until outputFrames) {
         val srcPos = i * ratio
         val srcIdx = srcPos.toInt().coerceAtMost(mono.size - 1)
-        val frac   = srcPos - srcIdx
+        val frac = srcPos - srcIdx
         val s0 = mono[srcIdx].toInt()
         val s1 = if (srcIdx + 1 < mono.size) mono[srcIdx + 1].toInt() else s0
-        val s  = (s0 + (s1 - s0) * frac).toInt().coerceIn(-32768, 32767)
-        out[i * 2]     = (s and 0xFF).toByte()
+        val s = (s0 + (s1 - s0) * frac).toInt().coerceIn(-32768, 32767)
+        out[i * 2] = (s and 0xFF).toByte()
         out[i * 2 + 1] = (s shr 8 and 0xFF).toByte()
     }
     return out
@@ -154,9 +156,14 @@ private fun decodeAudioToPcm(context: Context, uri: Uri, writeFd: ParcelFileDesc
         val mime = format.getString(MediaFormat.KEY_MIME)!!
 
         // Read initial sample rate / channel count (API-28-safe: use try-catch instead of 2-arg getInteger)
-        var outSampleRate   = runCatching { format.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrDefault(44100)
-        var outChannelCount = runCatching { format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(1)
-        Log.d(TAG, "decodeAudioToPcm: MIME=$mime sampleRate=$outSampleRate channels=$outChannelCount → converting to ${TARGET_SAMPLE_RATE} Hz mono")
+        var outSampleRate =
+            runCatching { format.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrDefault(44100)
+        var outChannelCount =
+            runCatching { format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(1)
+        Log.d(
+            TAG,
+            "decodeAudioToPcm: MIME=$mime sampleRate=$outSampleRate channels=$outChannelCount → converting to ${TARGET_SAMPLE_RATE} Hz mono"
+        )
 
         val codec = MediaCodec.createDecoderByType(mime)
         codec.configure(format, null, null, 0)
@@ -175,7 +182,13 @@ private fun decodeAudioToPcm(context: Context, uri: Uri, writeFd: ParcelFileDesc
                         val inputBuf = codec.getInputBuffer(inputIdx)!!
                         val sampleSize = extractor.readSampleData(inputBuf, 0)
                         if (sampleSize < 0) {
-                            codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            codec.queueInputBuffer(
+                                inputIdx,
+                                0,
+                                0,
+                                0,
+                                MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                            )
                             inputDone = true
                         } else {
                             codec.queueInputBuffer(inputIdx, 0, sampleSize, extractor.sampleTime, 0)
@@ -193,7 +206,12 @@ private fun decodeAudioToPcm(context: Context, uri: Uri, writeFd: ParcelFileDesc
                             val rawPcm = ByteArray(bufferInfo.size)
                             outputBuf.get(rawPcm)
                             // Convert to TARGET_SAMPLE_RATE Hz mono before writing to pipe
-                            val converted = convertToTargetPcm(rawPcm, outSampleRate, outChannelCount, TARGET_SAMPLE_RATE)
+                            val converted = convertToTargetPcm(
+                                rawPcm,
+                                outSampleRate,
+                                outChannelCount,
+                                TARGET_SAMPLE_RATE
+                            )
                             out.write(converted)
                         }
                         codec.releaseOutputBuffer(outputIdx, false)
@@ -201,11 +219,21 @@ private fun decodeAudioToPcm(context: Context, uri: Uri, writeFd: ParcelFileDesc
                             outputDone = true
                         }
                     }
+
                     outputIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         val newFmt = codec.outputFormat
-                        outSampleRate   = runCatching { newFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrDefault(outSampleRate)
-                        outChannelCount = runCatching { newFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(outChannelCount)
-                        Log.d(TAG, "decodeAudioToPcm: output format updated → sampleRate=$outSampleRate channels=$outChannelCount")
+                        outSampleRate =
+                            runCatching { newFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrDefault(
+                                outSampleRate
+                            )
+                        outChannelCount =
+                            runCatching { newFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(
+                                outChannelCount
+                            )
+                        Log.d(
+                            TAG,
+                            "decodeAudioToPcm: output format updated → sampleRate=$outSampleRate channels=$outChannelCount"
+                        )
                     }
                 }
             }
@@ -278,7 +306,10 @@ fun FileToTtsScreen(onBack: () -> Unit) {
                 } else null
             } ?: uri.lastPathSegment ?: ""
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to resolve display name for URI, falling back to path segment: ${e.message}")
+            Log.w(
+                TAG,
+                "Failed to resolve display name for URI, falling back to path segment: ${e.message}"
+            )
             selectedFileName = uri.lastPathSegment ?: ""
         }
     }
@@ -296,7 +327,8 @@ fun FileToTtsScreen(onBack: () -> Unit) {
 
         // Requirement 2.3: SDK version guard
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            Toast.makeText(context, "この機能はAndroid 12以上で利用できます", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "この機能はAndroid 12以上で利用できます", Toast.LENGTH_SHORT)
+                .show()
             return
         }
 
@@ -308,7 +340,11 @@ fun FileToTtsScreen(onBack: () -> Unit) {
             ParcelFileDescriptor.createPipe()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create pipe: ${e.message}", e)
-            Toast.makeText(context, "ファイルを読み込めませんでした: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                "ファイルを読み込めませんでした: ${e.message}",
+                Toast.LENGTH_SHORT
+            ).show()
             return
         }
         val readFd = pipe[0]   // passed to AudioSource.fromPfd()
@@ -334,17 +370,24 @@ fun FileToTtsScreen(onBack: () -> Unit) {
                         is SpeechRecognizerResponse.PartialTextResponse -> {
                             partialText = response.text
                         }
+
                         is SpeechRecognizerResponse.FinalTextResponse -> {
                             messages.add(UIChatMessage(response.text))
                             partialText = ""
                         }
+
                         is SpeechRecognizerResponse.ErrorResponse -> {
                             // Requirement 4.1
-                            Log.e(TAG, "Recognition ErrorResponse: ${response.e.message}", response.e)
+                            Log.e(
+                                TAG,
+                                "Recognition ErrorResponse: ${response.e.message}",
+                                response.e
+                            )
                             Toast.makeText(
                                 context, "エラー: ${response.e.message}", Toast.LENGTH_SHORT
                             ).show()
                         }
+
                         is SpeechRecognizerResponse.CompletedResponse -> {
                             // Requirement 3.3
                             isProcessing = false
@@ -395,7 +438,7 @@ fun FileToTtsScreen(onBack: () -> Unit) {
             // Requirement 1.4: Selected file label
             Text(
                 text = if (selectedFileName.isNotBlank()) selectedFileName
-                       else "ファイルが選択されていません",
+                else "ファイルが選択されていません",
                 modifier = Modifier.fillMaxWidth()
             )
 

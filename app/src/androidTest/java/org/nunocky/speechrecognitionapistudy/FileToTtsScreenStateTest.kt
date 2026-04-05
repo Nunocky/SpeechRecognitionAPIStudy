@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performClick
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.nunocky.speechrecognitionapistudy.ui.file.FileToTtsScreen
 
 /**
  * Compose UI integration tests for FileToTtsScreen — Tasks 7.1 (state/guard behavior surfaced

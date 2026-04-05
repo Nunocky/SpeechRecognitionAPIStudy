@@ -1,4 +1,4 @@
-package org.nunocky.speechrecognitionapistudy
+package org.nunocky.speechrecognitionapistudy.ui.mic
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -32,11 +32,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -51,6 +51,8 @@ import com.google.mlkit.genai.speechrecognition.SpeechRecognizerResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import org.nunocky.speechrecognitionapistudy.ui.component.ChatBubble
+import org.nunocky.speechrecognitionapistudy.ui.component.UIChatMessage
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
