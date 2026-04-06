@@ -278,7 +278,7 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
-        _uiState.update { it.copy(isProcessing = true, partialText = "") }
+        _uiState.update { it.copy(isProcessing = true, partialText = "", messages = emptyList()) }
 
         val request = SpeechRecognizerRequest.Builder().apply {
             audioSource = AudioSource.fromPfd(readFd)
