@@ -10,6 +10,7 @@
     <!-- Button labels -->
     <string name="button_mic_to_tts">Mic to TTS</string>
     <string name="button_file_to_tts">File to TTS</string>
+    <string name="label_locale_selector">Speech recognition locale</string>
     <string name="button_select_file">Select File</string>
     <string name="button_start_recognition">Start Recognition</string>
 

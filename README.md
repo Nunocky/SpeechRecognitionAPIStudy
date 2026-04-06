@@ -57,3 +57,8 @@ ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 output.wav
 - Android **12 (API 31)** or higher (ML Kit GenAI Speech Recognition requirement)
 - minSdk: 28
 - targetSdk / compileSdk: 36
+
+
+## References 
+
+- https://developers.google.com/ml-kit/genai/speech-recognition/android?hl=ja

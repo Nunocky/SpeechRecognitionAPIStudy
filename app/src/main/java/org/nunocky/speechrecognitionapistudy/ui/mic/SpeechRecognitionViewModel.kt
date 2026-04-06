@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.nunocky.speechrecognitionapistudy.locale.SupportedSpeechLocales
 import org.nunocky.speechrecognitionapistudy.ui.component.UIChatMessage
 import java.util.Locale
 
@@ -40,14 +41,27 @@ class SpeechRecognitionViewModel(application: Application) : AndroidViewModel(ap
     private val _events = MutableSharedFlow<SpeechRecognitionUiEvent>()
     val events = _events.asSharedFlow()
 
-    private val speechRecognizer = run {
+    private var currentLocaleTag: String = SupportedSpeechLocales.DefaultLocaleTag
+    private var speechRecognizer = createSpeechRecognizer(currentLocaleTag)
+
+    private var recognitionJob: Job? = null
+
+    fun setLocaleTag(localeTag: String) {
+        val sanitizedTag = SupportedSpeechLocales.sanitize(localeTag)
+        if (sanitizedTag == currentLocaleTag || recognitionJob != null) return
+
+        currentLocaleTag = sanitizedTag
+        speechRecognizer.close()
+        speechRecognizer = createSpeechRecognizer(currentLocaleTag)
+    }
+
+    private fun createSpeechRecognizer(localeTag: String) = run {
         val options = SpeechRecognizerOptions.Builder().apply {
-            locale = Locale.JAPAN
+            locale = Locale.forLanguageTag(localeTag)
         }.build()
         SpeechRecognition.getClient(options)
     }
 
-    private var recognitionJob: Job? = null
 
     fun startListening() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {

@@ -9,6 +9,7 @@
     <!-- Button labels -->
     <string name="button_mic_to_tts">マイクからTTS</string>
     <string name="button_file_to_tts">ファイルからTTS</string>
+    <string name="label_locale_selector">音声認識ロケール</string>
     <string name="button_select_file">ファイルを選択</string>
     <string name="button_start_recognition">認識開始</string>
 

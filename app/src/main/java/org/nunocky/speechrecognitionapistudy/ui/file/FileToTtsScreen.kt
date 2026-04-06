@@ -32,16 +32,22 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.nunocky.speechrecognitionapistudy.R
+import org.nunocky.speechrecognitionapistudy.locale.SupportedSpeechLocales
 import org.nunocky.speechrecognitionapistudy.ui.component.ChatBubble
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileToTtsScreen(
+    localeTag: String = SupportedSpeechLocales.DefaultLocaleTag,
     onBack: () -> Unit,
     viewModel: FileToTtsViewModel = viewModel()
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+
+    LaunchedEffect(localeTag) {
+        viewModel.setLocaleTag(localeTag)
+    }
 
     // 一度限りのイベント（エラー表示など）を収集
     LaunchedEffect(Unit) {
