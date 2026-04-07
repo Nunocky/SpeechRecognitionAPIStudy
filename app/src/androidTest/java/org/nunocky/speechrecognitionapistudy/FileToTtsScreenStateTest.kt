@@ -11,7 +11,10 @@ import androidx.compose.ui.test.performClick
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.nunocky.speechrecognitionapistudy.ui.component.UIChatMessage
+import org.nunocky.speechrecognitionapistudy.ui.file.FileToTtsScreenContent
 import org.nunocky.speechrecognitionapistudy.ui.file.FileToTtsScreen
+import org.nunocky.speechrecognitionapistudy.ui.file.FileToTtsUiState
 
 /**
  * Compose UI integration tests for FileToTtsScreen — Tasks 7.1 (state/guard behavior surfaced
@@ -23,6 +26,46 @@ class FileToTtsScreenStateTest {
 
     @get:Rule
     val composeTestRule = createComposeRule()
+
+    @Test
+    fun recognizingState_showsOnlyPartialText_andHidesMessages() {
+        composeTestRule.setContent {
+            FileToTtsScreenContent(
+                uiState = FileToTtsUiState(
+                    isRecognizing = true,
+                    partialText = "intermediate transcript",
+                    messages = listOf(UIChatMessage("aggregated final transcript"))
+                ),
+                onBack = {},
+                onSelectFile = {},
+                onStartRecognition = {},
+                onTogglePlayback = {}
+            )
+        }
+
+        composeTestRule.onNodeWithText("intermediate transcript").assertIsDisplayed()
+        composeTestRule.onNodeWithText("aggregated final transcript").assertDoesNotExist()
+    }
+
+    @Test
+    fun completedState_showsOnlyAggregatedMessages_andHidesPartialText() {
+        composeTestRule.setContent {
+            FileToTtsScreenContent(
+                uiState = FileToTtsUiState(
+                    isRecognizing = false,
+                    partialText = "stale partial transcript",
+                    messages = listOf(UIChatMessage("aggregated final transcript"))
+                ),
+                onBack = {},
+                onSelectFile = {},
+                onStartRecognition = {},
+                onTogglePlayback = {}
+            )
+        }
+
+        composeTestRule.onNodeWithText("aggregated final transcript").assertIsDisplayed()
+        composeTestRule.onNodeWithText("stale partial transcript").assertDoesNotExist()
+    }
 
     // ---- Initial state ----
 
@@ -164,4 +207,3 @@ class FileToTtsScreenStateTest {
         // If we reach here without an exception, disposal was clean
     }
 }
-

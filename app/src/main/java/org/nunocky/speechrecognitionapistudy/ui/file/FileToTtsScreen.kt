@@ -1,5 +1,7 @@
 package org.nunocky.speechrecognitionapistudy.ui.file
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.nunocky.speechrecognitionapistudy.R
 import org.nunocky.speechrecognitionapistudy.locale.SupportedSpeechLocales
@@ -73,6 +76,50 @@ fun FileToTtsScreen(
         if (uri != null) viewModel.onFileSelected(uri)
     }
 
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            viewModel.startRecognition()
+        } else {
+            Toast.makeText(context, context.getString(R.string.toast_permission_denied), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun onStartRecognition() {
+        if (
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.startRecognition()
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    FileToTtsScreenContent(
+        uiState = uiState,
+        onBack = onBack,
+        onSelectFile = { fileLauncher.launch("audio/*") },
+        onStartRecognition = ::onStartRecognition,
+        onTogglePlayback = { viewModel.togglePlayback() }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FileToTtsScreenContent(
+    uiState: FileToTtsUiState,
+    onBack: () -> Unit,
+    onSelectFile: () -> Unit,
+    onStartRecognition: () -> Unit,
+    onTogglePlayback: () -> Unit
+) {
+    val visibleMessages = if (uiState.isRecognizing) emptyList() else uiState.messages
+    val visiblePartialText = if (uiState.isRecognizing) uiState.partialText else ""
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -102,7 +149,7 @@ fun FileToTtsScreen(
             )
 
             Button(
-                onClick = { fileLauncher.launch("audio/*") },
+                onClick = onSelectFile,
                 enabled = !uiState.isProcessing,
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -110,11 +157,22 @@ fun FileToTtsScreen(
             }
 
             Button(
-                onClick = { viewModel.startRecognition() },
+                onClick = onStartRecognition,
                 enabled = !uiState.isProcessing,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(stringResource(R.string.button_start_recognition))
+            }
+
+            Button(
+                onClick = onTogglePlayback,
+                enabled = !uiState.isProcessing,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    if (uiState.isPlaying) stringResource(R.string.button_stop_playback)
+                    else stringResource(R.string.button_play_file)
+                )
             }
 
             if (uiState.isProcessing) {
@@ -131,14 +189,14 @@ fun FileToTtsScreen(
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                if (uiState.messages.isEmpty() && uiState.partialText.isBlank()) {
+                if (visibleMessages.isEmpty() && visiblePartialText.isBlank()) {
                     item { Text(stringResource(R.string.label_recognition_placeholder)) }
                 }
-                items(uiState.messages) { message ->
+                items(visibleMessages) { message ->
                     ChatBubble(message.text)
                 }
-                if (uiState.partialText.isNotBlank()) {
-                    item { ChatBubble(uiState.partialText) }
+                if (visiblePartialText.isNotBlank()) {
+                    item { ChatBubble(visiblePartialText) }
                 }
             }
         }

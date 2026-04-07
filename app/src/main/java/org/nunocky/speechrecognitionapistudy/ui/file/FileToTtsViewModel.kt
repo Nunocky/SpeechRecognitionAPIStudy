@@ -1,9 +1,8 @@
 package org.nunocky.speechrecognitionapistudy.ui.file
 
 import android.app.Application
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -11,13 +10,15 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.mlkit.genai.common.DownloadStatus
+import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.common.audio.AudioSource
 import com.google.mlkit.genai.speechrecognition.SpeechRecognition
+import com.google.mlkit.genai.speechrecognition.SpeechRecognizer
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizerOptions
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizerRequest
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizerResponse
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,181 +26,23 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.nunocky.speechrecognitionapistudy.locale.SupportedSpeechLocales
 import org.nunocky.speechrecognitionapistudy.ui.component.UIChatMessage
-import java.io.FileOutputStream
+import java.io.File
 import java.util.Locale
 
 private const val TAG = "FileToTtsViewModel"
-
-/** Target PCM format expected by ML Kit GenAI Speech Recognition */
-private const val TARGET_SAMPLE_RATE = 16000
-
-private fun ByteArray.getShortLE(offset: Int): Int =
-    ((this[offset + 1].toInt() shl 8) or (this[offset].toInt() and 0xFF)).toShort().toInt()
-
-private fun convertToTargetPcm(
-    input: ByteArray,
-    inputSampleRate: Int,
-    channelCount: Int
-): ByteArray {
-    val inputFrames = input.size / (channelCount * 2)
-
-    val mono = ShortArray(inputFrames) { frame ->
-        if (channelCount == 1) {
-            input.getShortLE(frame * 2).toShort()
-        } else {
-            var sum = 0
-            for (ch in 0 until channelCount) {
-                sum += input.getShortLE((frame * channelCount + ch) * 2)
-            }
-            (sum / channelCount).coerceIn(-32768, 32767).toShort()
-        }
-    }
-
-    if (inputSampleRate == TARGET_SAMPLE_RATE) {
-        val out = ByteArray(mono.size * 2)
-        mono.forEachIndexed { i, s ->
-            out[i * 2] = (s.toInt() and 0xFF).toByte()
-            out[i * 2 + 1] = (s.toInt() shr 8 and 0xFF).toByte()
-        }
-        return out
-    }
-
-    val ratio = inputSampleRate.toDouble() / TARGET_SAMPLE_RATE.toDouble()
-    val outputFrames = (inputFrames / ratio).toInt()
-    val out = ByteArray(outputFrames * 2)
-    for (i in 0 until outputFrames) {
-        val srcPos = i * ratio
-        val srcIdx = srcPos.toInt().coerceAtMost(mono.size - 1)
-        val frac = srcPos - srcIdx
-        val s0 = mono[srcIdx].toInt()
-        val s1 = if (srcIdx + 1 < mono.size) mono[srcIdx + 1].toInt() else s0
-        val s = (s0 + (s1 - s0) * frac).toInt().coerceIn(-32768, 32767)
-        out[i * 2] = (s and 0xFF).toByte()
-        out[i * 2 + 1] = (s shr 8 and 0xFF).toByte()
-    }
-    return out
-}
-
-private fun decodeAudioToPcm(
-    app: Application,
-    uri: Uri,
-    writeFd: ParcelFileDescriptor
-) {
-    try {
-        val extractor = MediaExtractor()
-        extractor.setDataSource(app, uri, null)
-
-        var audioTrackIdx = -1
-        for (i in 0 until extractor.trackCount) {
-            val fmt = extractor.getTrackFormat(i)
-            if (fmt.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
-                audioTrackIdx = i
-                break
-            }
-        }
-        if (audioTrackIdx < 0) {
-            Log.e(TAG, "decodeAudioToPcm: no audio track found in $uri")
-            return
-        }
-
-        extractor.selectTrack(audioTrackIdx)
-        val format = extractor.getTrackFormat(audioTrackIdx)
-        val mime = format.getString(MediaFormat.KEY_MIME)!!
-
-        var outSampleRate =
-            runCatching { format.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrDefault(44100)
-        var outChannelCount =
-            runCatching { format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(1)
-        Log.d(
-            TAG,
-            "decodeAudioToPcm: MIME=$mime sampleRate=$outSampleRate channels=$outChannelCount → converting to $TARGET_SAMPLE_RATE Hz mono"
-        )
-
-        val codec = MediaCodec.createDecoderByType(mime)
-        codec.configure(format, null, null, 0)
-        codec.start()
-
-        FileOutputStream(writeFd.fileDescriptor).buffered(65536).use { out ->
-            val bufferInfo = MediaCodec.BufferInfo()
-            var inputDone = false
-            var outputDone = false
-
-            while (!outputDone) {
-                if (!inputDone) {
-                    val inputIdx = codec.dequeueInputBuffer(10_000L)
-                    if (inputIdx >= 0) {
-                        val inputBuf = codec.getInputBuffer(inputIdx)!!
-                        val sampleSize = extractor.readSampleData(inputBuf, 0)
-                        if (sampleSize < 0) {
-                            codec.queueInputBuffer(
-                                inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM
-                            )
-                            inputDone = true
-                        } else {
-                            codec.queueInputBuffer(inputIdx, 0, sampleSize, extractor.sampleTime, 0)
-                            extractor.advance()
-                        }
-                    }
-                }
-
-                val outputIdx = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
-                when {
-                    outputIdx >= 0 -> {
-                        val outputBuf = codec.getOutputBuffer(outputIdx)!!
-                        if (bufferInfo.size > 0) {
-                            val rawPcm = ByteArray(bufferInfo.size)
-                            outputBuf.get(rawPcm)
-                            val converted = convertToTargetPcm(
-                                rawPcm, outSampleRate, outChannelCount
-                            )
-                            out.write(converted)
-                        }
-                        codec.releaseOutputBuffer(outputIdx, false)
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            outputDone = true
-                        }
-                    }
-
-                    outputIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        val newFmt = codec.outputFormat
-                        outSampleRate =
-                            runCatching { newFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) }
-                                .getOrDefault(outSampleRate)
-                        outChannelCount =
-                            runCatching { newFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }
-                                .getOrDefault(outChannelCount)
-                        Log.d(
-                            TAG,
-                            "decodeAudioToPcm: output format updated → sampleRate=$outSampleRate channels=$outChannelCount"
-                        )
-                    }
-                }
-            }
-        }
-
-        codec.stop()
-        codec.release()
-        extractor.release()
-        Log.d(TAG, "decodeAudioToPcm: decode + conversion complete")
-    } catch (e: Exception) {
-        if (e.message?.contains("EPIPE") == true || e.message?.contains("Broken pipe") == true) {
-            Log.d(TAG, "decodeAudioToPcm: pipe closed by recognition side (expected on cancel)")
-        } else {
-            Log.e(TAG, "decodeAudioToPcm: error — ${e.message}", e)
-        }
-    } finally {
-        runCatching { writeFd.close() }
-    }
-}
 
 // ── UI State / Events ─────────────────────────────────────────────────────────
 
 data class FileToTtsUiState(
     val selectedFileName: String = "",
     val isProcessing: Boolean = false,
+    val isRecognizing: Boolean = false,
+    val isPlaying: Boolean = false,
     val partialText: String = "",
     val messages: List<UIChatMessage> = emptyList()
 )
@@ -208,6 +51,59 @@ sealed class FileToTtsUiEvent {
     data class ShowError(val message: String) : FileToTtsUiEvent()
     object UnsupportedVersion : FileToTtsUiEvent()
     object NoFileSelected : FileToTtsUiEvent()
+}
+
+internal fun canStartRecognition(
+    currentState: FileToTtsUiState,
+    hasRecognitionJob: Boolean
+): Boolean = !hasRecognitionJob && !currentState.isRecognizing
+
+internal fun markRecognitionStarted(currentState: FileToTtsUiState): FileToTtsUiState =
+    currentState.copy(
+        isProcessing = true,
+        isRecognizing = true,
+        partialText = "",
+        messages = emptyList()
+    )
+
+internal fun applyFinalTextResponseAggregation(
+    currentState: FileToTtsUiState,
+    finalText: String,
+    resultBuffer: ResultBuffer
+): FileToTtsUiState {
+    resultBuffer.add(finalText)
+    return currentState.copy(partialText = "")
+}
+
+internal fun applyCompletedResponseAggregation(
+    currentState: FileToTtsUiState,
+    resultBuffer: ResultBuffer
+): FileToTtsUiState {
+    val aggregatedText = resultBuffer.getAggregated()
+    val updatedMessages = if (aggregatedText.isNotBlank()) {
+        currentState.messages + UIChatMessage(aggregatedText)
+    } else {
+        currentState.messages
+    }
+    resultBuffer.clear()
+    return currentState.copy(
+        isProcessing = false,
+        isRecognizing = false,
+        partialText = "",
+        messages = updatedMessages
+    )
+}
+
+internal fun applyErrorOrCancelReset(
+    currentState: FileToTtsUiState,
+    resultBuffer: ResultBuffer
+): FileToTtsUiState {
+    resultBuffer.clear()
+    return currentState.copy(
+        isProcessing = false,
+        isRecognizing = false,
+        partialText = ""
+    )
 }
 
 // ── ViewModel ─────────────────────────────────────────────────────────────────
@@ -221,19 +117,19 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
     val events = _events.asSharedFlow()
 
     private var selectedFileUri: Uri? = null
+    private var mediaPlayer: MediaPlayer? = null
+    private val resultBuffer = ResultBuffer()
 
     private var currentLocaleTag: String = SupportedSpeechLocales.DefaultLocaleTag
-    private var speechRecognizer = createSpeechRecognizer(currentLocaleTag)
 
     private var recognitionJob: Job? = null
+    private var runCounter: Long = 0
 
     fun setLocaleTag(localeTag: String) {
         val sanitizedTag = SupportedSpeechLocales.sanitize(localeTag)
         if (sanitizedTag == currentLocaleTag || recognitionJob != null) return
 
         currentLocaleTag = sanitizedTag
-        speechRecognizer.close()
-        speechRecognizer = createSpeechRecognizer(currentLocaleTag)
     }
 
     private fun createSpeechRecognizer(localeTag: String) = run {
@@ -243,9 +139,63 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
         SpeechRecognition.getClient(options)
     }
 
+    private suspend fun ensureRecognizerReady(
+        recognizer: SpeechRecognizer,
+        runId: Long
+    ): Boolean {
+        val status = recognizer.checkStatus()
+        Log.d(TAG, "startRecognition[$runId]: checkStatus=$status")
+
+        if (status == FeatureStatus.AVAILABLE) return true
+
+        if (status == FeatureStatus.DOWNLOADABLE) {
+            Log.d(TAG, "startRecognition[$runId]: feature downloadable, start download")
+            var totalToDownload: Long = 0
+            recognizer.download().collect { downloadStatus ->
+                when (downloadStatus) {
+                    is DownloadStatus.DownloadStarted -> {
+                        totalToDownload = downloadStatus.bytesToDownload
+                        Log.d(
+                            TAG,
+                            "startRecognition[$runId]: download started bytes=$totalToDownload"
+                        )
+                    }
+
+                    is DownloadStatus.DownloadProgress -> {
+                        Log.d(
+                            TAG,
+                            "startRecognition[$runId]: downloading ${downloadStatus.totalBytesDownloaded}/$totalToDownload"
+                        )
+                    }
+
+                    is DownloadStatus.DownloadCompleted -> {
+                        Log.d(TAG, "startRecognition[$runId]: download completed")
+                    }
+
+                    is DownloadStatus.DownloadFailed -> {
+                        throw IllegalStateException(
+                            "Model download failed: ${downloadStatus.e.message}"
+                        )
+                    }
+                }
+            }
+
+            val recheck = recognizer.checkStatus()
+            Log.d(TAG, "startRecognition[$runId]: checkStatus(after download)=$recheck")
+            return recheck == FeatureStatus.AVAILABLE
+        }
+
+        return false
+    }
+
 
     fun onFileSelected(uri: Uri) {
+        stopPlaybackInternal()
         selectedFileUri = uri
+
+        // Task 3.1: Clear result buffer from previous file selection
+        resultBuffer.clear()
+
         val app = getApplication<Application>()
         val fileName = try {
             val cursor = app.contentResolver.query(
@@ -261,11 +211,86 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
             Log.w(TAG, "Failed to resolve display name: ${e.message}")
             uri.lastPathSegment ?: ""
         }
-        _uiState.update { it.copy(selectedFileName = fileName) }
+
+        // Task 3.1: Update state with new file name and clear previous results
+        // Ensures multiple file selections don't mix results (Requirements: 1, 3)
+        _uiState.update { it.copy(
+            selectedFileName = fileName,
+            isPlaying = false,
+            partialText = "",      // Clear partial text from previous recognition
+            messages = emptyList()  // Clear messages to prevent result mixing
+        ) }
+    }
+
+    fun togglePlayback() {
+        if (_uiState.value.isPlaying) {
+            stopPlaybackInternal()
+            return
+        }
+
+        val uri = selectedFileUri
+        if (uri == null) {
+            viewModelScope.launch { _events.emit(FileToTtsUiEvent.NoFileSelected) }
+            return
+        }
+
+        startPlayback(uri)
+    }
+
+    private fun startPlayback(uri: Uri) {
+        val app = getApplication<Application>()
+
+        runCatching {
+            stopPlaybackInternal()
+            mediaPlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                setDataSource(app, uri)
+                setOnCompletionListener {
+                    stopPlaybackInternal()
+                }
+                setOnErrorListener { _, what, extra ->
+                    Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
+                    stopPlaybackInternal()
+                    viewModelScope.launch {
+                        _events.emit(FileToTtsUiEvent.ShowError("Audio playback failed"))
+                    }
+                    true
+                }
+                prepare()
+                start()
+            }
+            _uiState.update { it.copy(isPlaying = true) }
+        }.onFailure { e ->
+            Log.e(TAG, "Failed to start playback: ${e.message}", e)
+            stopPlaybackInternal()
+            viewModelScope.launch {
+                _events.emit(FileToTtsUiEvent.ShowError(e.message ?: ""))
+            }
+        }
+    }
+
+    private fun stopPlaybackInternal() {
+        runCatching {
+            mediaPlayer?.stop()
+        }
+        runCatching {
+            mediaPlayer?.release()
+        }
+        mediaPlayer = null
+        _uiState.update { it.copy(isPlaying = false) }
     }
 
     fun startRecognition() {
-        if (recognitionJob != null) return
+        if (!canStartRecognition(_uiState.value, recognitionJob != null)) return
+
+        if (_uiState.value.isPlaying) {
+            stopPlaybackInternal()
+        }
 
         if (selectedFileUri == null) {
             viewModelScope.launch { _events.emit(FileToTtsUiEvent.NoFileSelected) }
@@ -280,30 +305,46 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
         val uri = selectedFileUri!!
         val app = getApplication<Application>()
 
-        val pipe = try {
-            ParcelFileDescriptor.createPipe()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to create pipe: ${e.message}", e)
-            viewModelScope.launch {
-                _events.emit(FileToTtsUiEvent.ShowError(e.message ?: ""))
-            }
-            return
-        }
-        val readFd = pipe[0]
-        val writeFd = pipe[1]
+        val runId = ++runCounter
 
-        _uiState.update { it.copy(isProcessing = true, partialText = "", messages = emptyList()) }
-
-        val request = SpeechRecognizerRequest.Builder().apply {
-            audioSource = AudioSource.fromPfd(readFd)
-        }.build()
-
-        val decoderJob = viewModelScope.launch(Dispatchers.IO) {
-            decodeAudioToPcm(app, uri, writeFd)
-        }
+        _uiState.update { state -> markRecognitionStarted(state) }
 
         recognitionJob = viewModelScope.launch {
+            var tempWavFile: File? = null
+            var readFd: ParcelFileDescriptor? = null
+            var writeFd: ParcelFileDescriptor? = null
+            var streamJob: Job? = null
+            val speechRecognizer = createSpeechRecognizer(currentLocaleTag)
+            Log.d(TAG, "startRecognition[$runId]: recognizer created locale=$currentLocaleTag")
+
             try {
+                val ready = ensureRecognizerReady(speechRecognizer, runId)
+                if (!ready) {
+                    _events.emit(
+                        FileToTtsUiEvent.ShowError(
+                            "Speech feature is not available yet. Please retry in a few moments."
+                        )
+                    )
+                    _uiState.update { state -> applyErrorOrCancelReset(state, resultBuffer) }
+                    return@launch
+                }
+
+                tempWavFile = withContext(Dispatchers.IO) {
+                    createTempPcmFile(app, uri)
+                }
+                Log.d(TAG, "startRecognition[$runId]: temp pcm bytes=${tempWavFile.length()}")
+                val pipe = ParcelFileDescriptor.createPipe()
+                readFd = pipe[0]
+                writeFd = pipe[1]
+
+                streamJob = viewModelScope.launch(Dispatchers.IO) {
+                    streamPcmFileToPipe(tempWavFile, writeFd)
+                }
+
+                val request = SpeechRecognizerRequest.Builder().apply {
+                    audioSource = AudioSource.fromPfd(readFd)
+                }.build()
+
                 speechRecognizer.startRecognition(request).collect { response ->
                     when (response) {
                         is SpeechRecognizerResponse.PartialTextResponse -> {
@@ -312,33 +353,50 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
 
                         is SpeechRecognizerResponse.FinalTextResponse -> {
                             _uiState.update { state ->
-                                state.copy(
-                                    messages = state.messages + UIChatMessage(response.text),
-                                    partialText = ""
+                                applyFinalTextResponseAggregation(
+                                    currentState = state,
+                                    finalText = response.text,
+                                    resultBuffer = resultBuffer
                                 )
                             }
                         }
 
                         is SpeechRecognizerResponse.ErrorResponse -> {
-                            Log.e(TAG, "Recognition ErrorResponse: ${response.e.message}", response.e)
+                            Log.e(TAG, "Recognition ErrorResponse[$runId]: ${response.e.message}", response.e)
                             _events.emit(FileToTtsUiEvent.ShowError(response.e.message ?: ""))
+                            _uiState.update { state -> applyErrorOrCancelReset(state, resultBuffer) }
                         }
 
                         is SpeechRecognizerResponse.CompletedResponse -> {
-                            _uiState.update { it.copy(isProcessing = false) }
+                            _uiState.update { state ->
+                                applyCompletedResponseAggregation(
+                                    currentState = state,
+                                    resultBuffer = resultBuffer
+                                )
+                            }
                             recognitionJob = null
                         }
                     }
                 }
             } catch (_: CancellationException) {
-                Log.d(TAG, "Recognition cancelled (expected control flow)")
+                Log.d(TAG, "Recognition cancelled[$runId] (expected control flow)")
+                _uiState.update { state -> applyErrorOrCancelReset(state, resultBuffer) }
             } catch (e: Exception) {
-                Log.e(TAG, "Unexpected exception during recognition: ${e.message}", e)
+                Log.e(TAG, "Unexpected exception during recognition[$runId]: ${e.message}", e)
                 _events.emit(FileToTtsUiEvent.ShowError(e.message ?: ""))
+                _uiState.update { state -> applyErrorOrCancelReset(state, resultBuffer) }
             } finally {
-                decoderJob.cancel()
-                runCatching { readFd.close() }
-                _uiState.update { it.copy(isProcessing = false) }
+                streamJob?.cancel()
+                runCatching { readFd?.close() }
+                runCatching { writeFd?.close() }
+                runCatching { speechRecognizer.stopRecognition() }
+                runCatching { speechRecognizer.close() }
+                runCatching {
+                    val deleted = tempWavFile?.delete() ?: true
+                    Log.d(TAG, "startRecognition[$runId]: temp pcm deleted=$deleted")
+                }
+                Log.d(TAG, "startRecognition[$runId]: recognizer closed")
+                _uiState.update { it.copy(isProcessing = false, isRecognizing = false) }
                 recognitionJob = null
             }
         }
@@ -347,12 +405,6 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
     override fun onCleared() {
         super.onCleared()
         recognitionJob?.cancel()
-        speechRecognizer.close()
+        stopPlaybackInternal()
     }
 }
-
-
-
-
-
-
