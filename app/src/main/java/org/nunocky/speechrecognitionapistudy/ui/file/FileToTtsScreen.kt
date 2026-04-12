@@ -2,11 +2,13 @@ package org.nunocky.speechrecognitionapistudy.ui.file
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,18 +16,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -47,6 +54,7 @@ fun FileToTtsScreen(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    var pendingBatchUri by remember { mutableStateOf<Uri?>(null) }
 
     LaunchedEffect(localeTag) {
         viewModel.setLocaleTag(localeTag)
@@ -66,7 +74,33 @@ fun FileToTtsScreen(
 
                 FileToTtsUiEvent.NoFileSelected ->
                     Toast.makeText(context, context.getString(R.string.toast_no_file_selected), Toast.LENGTH_SHORT).show()
+
+                is FileToTtsUiEvent.BatchCompleted ->
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.toast_batch_completed, event.jsonPath, event.csvPath),
+                        Toast.LENGTH_LONG
+                    ).show()
+
+                FileToTtsUiEvent.NoBatchAudioFiles ->
+                    Toast.makeText(context, context.getString(R.string.toast_batch_no_audio_files), Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            if (pendingBatchUri != null) {
+                viewModel.startBatchRecognition(pendingBatchUri!!)
+                pendingBatchUri = null
+            } else {
+                viewModel.startRecognition()
+            }
+        } else {
+            Toast.makeText(context, context.getString(R.string.toast_permission_denied), Toast.LENGTH_SHORT).show()
+            pendingBatchUri = null
         }
     }
 
@@ -76,26 +110,32 @@ fun FileToTtsScreen(
         if (uri != null) viewModel.onFileSelected(uri)
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            viewModel.startRecognition()
-        } else {
-            Toast.makeText(context, context.getString(R.string.toast_permission_denied), Toast.LENGTH_SHORT).show()
+    val dirLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            if (ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.RECORD_AUDIO
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                pendingBatchUri = uri
+                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            } else {
+                viewModel.startBatchRecognition(uri)
+            }
         }
     }
 
-    fun onStartRecognition() {
-        if (
-            ContextCompat.checkSelfPermission(
+    fun onStartRecognitionClick() {
+        if (ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
+            ) != PackageManager.PERMISSION_GRANTED
         ) {
-            viewModel.startRecognition()
-        } else {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            viewModel.startRecognition()
         }
     }
 
@@ -103,8 +143,10 @@ fun FileToTtsScreen(
         uiState = uiState,
         onBack = onBack,
         onSelectFile = { fileLauncher.launch("audio/*") },
-        onStartRecognition = ::onStartRecognition,
-        onTogglePlayback = { viewModel.togglePlayback() }
+        onStartRecognition = ::onStartRecognitionClick,
+        onTogglePlayback = { viewModel.togglePlayback() },
+        onSeek = { viewModel.seekTo(it) },
+        onSelectDirectory = { dirLauncher.launch(null) }
     )
 }
 
@@ -115,7 +157,9 @@ fun FileToTtsScreenContent(
     onBack: () -> Unit,
     onSelectFile: () -> Unit,
     onStartRecognition: () -> Unit,
-    onTogglePlayback: () -> Unit
+    onTogglePlayback: () -> Unit,
+    onSeek: (Int) -> Unit,
+    onSelectDirectory: () -> Unit
 ) {
     val visibleMessages = if (uiState.isRecognizing) emptyList() else uiState.messages
     val visiblePartialText = if (uiState.isRecognizing) uiState.partialText else ""
@@ -148,25 +192,35 @@ fun FileToTtsScreenContent(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Button(
-                onClick = onSelectFile,
-                enabled = !uiState.isProcessing,
-                modifier = Modifier.fillMaxWidth()
+            // ファイル選択と認識開始ボタンを横並び
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(stringResource(R.string.button_select_file))
+                Button(
+                    onClick = onSelectFile,
+                    enabled = !uiState.isProcessing && !uiState.isBatchProcessing,
+                    modifier = Modifier
+                        .weight(1f)
+                ) {
+                    Text(stringResource(R.string.button_select_file))
+                }
+
+                Button(
+                    onClick = onStartRecognition,
+                    enabled = !uiState.isProcessing && !uiState.isBatchProcessing,
+                    modifier = Modifier
+                        .weight(1f)
+                ) {
+                    Text(stringResource(R.string.button_start_recognition))
+                }
             }
 
-            Button(
-                onClick = onStartRecognition,
-                enabled = !uiState.isProcessing,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(stringResource(R.string.button_start_recognition))
-            }
-
+            // 再生と一括処理ボタンを別々に配置
             Button(
                 onClick = onTogglePlayback,
-                enabled = !uiState.isProcessing,
+                enabled = !uiState.isProcessing && !uiState.isBatchProcessing,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
@@ -175,11 +229,62 @@ fun FileToTtsScreenContent(
                 )
             }
 
+            if (uiState.playbackDurationMs > 0) {
+                val sliderValue = if (uiState.playbackDurationMs > 0) {
+                    uiState.playbackPositionMs.toFloat() / uiState.playbackDurationMs.toFloat()
+                } else 0f
+                Slider(
+                    value = sliderValue,
+                    onValueChange = { fraction ->
+                        onSeek((fraction * uiState.playbackDurationMs).toInt())
+                    },
+                    enabled = !uiState.isProcessing && !uiState.isBatchProcessing,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Button(
+                onClick = onSelectDirectory,
+                enabled = !uiState.isProcessing && !uiState.isBatchProcessing,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(stringResource(R.string.button_batch_directory))
+            }
+
             if (uiState.isProcessing) {
                 CircularProgressIndicator(
                     modifier = Modifier
                         .align(Alignment.CenterHorizontally)
                         .testTag("progress_indicator")
+                )
+            }
+
+            if (uiState.isBatchProcessing) {
+                AlertDialog(
+                    onDismissRequest = {},
+                    confirmButton = {},
+                    title = { Text(stringResource(R.string.dialog_title_batch_processing)) },
+                    text = {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator()
+                            Text(
+                                stringResource(
+                                    R.string.label_batch_progress,
+                                    uiState.batchProcessedCount,
+                                    uiState.batchTotalFiles
+                                )
+                            )
+                            if (uiState.batchCurrentFileName.isNotBlank()) {
+                                Text(uiState.batchCurrentFileName)
+                            }
+                            if (uiState.batchCurrentText.isNotBlank()) {
+                                Text(uiState.batchCurrentText)
+                            }
+                        }
+                    }
                 )
             }
 

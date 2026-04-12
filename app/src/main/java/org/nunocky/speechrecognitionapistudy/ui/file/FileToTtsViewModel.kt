@@ -5,9 +5,11 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.util.Log
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.mlkit.genai.common.DownloadStatus
@@ -18,25 +20,28 @@ import com.google.mlkit.genai.speechrecognition.SpeechRecognizer
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizerOptions
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizerRequest
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizerResponse
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import org.nunocky.speechrecognitionapistudy.locale.SupportedSpeechLocales
 import org.nunocky.speechrecognitionapistudy.ui.component.UIChatMessage
-import java.io.File
-import java.util.Locale
 
 private const val TAG = "FileToTtsViewModel"
-
-// ── UI State / Events ─────────────────────────────────────────────────────────
 
 data class FileToTtsUiState(
     val selectedFileName: String = "",
@@ -44,13 +49,22 @@ data class FileToTtsUiState(
     val isRecognizing: Boolean = false,
     val isPlaying: Boolean = false,
     val partialText: String = "",
-    val messages: List<UIChatMessage> = emptyList()
+    val messages: List<UIChatMessage> = emptyList(),
+    val isBatchProcessing: Boolean = false,
+    val batchCurrentFileName: String = "",
+    val batchCurrentText: String = "",
+    val batchTotalFiles: Int = 0,
+    val batchProcessedCount: Int = 0,
+    val playbackPositionMs: Int = 0,
+    val playbackDurationMs: Int = 0
 )
 
 sealed class FileToTtsUiEvent {
     data class ShowError(val message: String) : FileToTtsUiEvent()
     object UnsupportedVersion : FileToTtsUiEvent()
     object NoFileSelected : FileToTtsUiEvent()
+    data class BatchCompleted(val jsonPath: String, val csvPath: String) : FileToTtsUiEvent()
+    object NoBatchAudioFiles : FileToTtsUiEvent()
 }
 
 internal fun canStartRecognition(
@@ -106,8 +120,6 @@ internal fun applyErrorOrCancelReset(
     )
 }
 
-// ── ViewModel ─────────────────────────────────────────────────────────────────
-
 class FileToTtsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(FileToTtsUiState())
@@ -123,12 +135,13 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
     private var currentLocaleTag: String = SupportedSpeechLocales.DefaultLocaleTag
 
     private var recognitionJob: Job? = null
+    private var batchJob: Job? = null
+    private var playbackPollingJob: Job? = null
     private var runCounter: Long = 0
 
     fun setLocaleTag(localeTag: String) {
         val sanitizedTag = SupportedSpeechLocales.sanitize(localeTag)
         if (sanitizedTag == currentLocaleTag || recognitionJob != null) return
-
         currentLocaleTag = sanitizedTag
     }
 
@@ -155,10 +168,7 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
                 when (downloadStatus) {
                     is DownloadStatus.DownloadStarted -> {
                         totalToDownload = downloadStatus.bytesToDownload
-                        Log.d(
-                            TAG,
-                            "startRecognition[$runId]: download started bytes=$totalToDownload"
-                        )
+                        Log.d(TAG, "startRecognition[$runId]: download started bytes=$totalToDownload")
                     }
 
                     is DownloadStatus.DownloadProgress -> {
@@ -173,9 +183,7 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
                     }
 
                     is DownloadStatus.DownloadFailed -> {
-                        throw IllegalStateException(
-                            "Model download failed: ${downloadStatus.e.message}"
-                        )
+                        throw IllegalStateException("Model download failed: ${downloadStatus.e.message}")
                     }
                 }
             }
@@ -188,12 +196,9 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
         return false
     }
 
-
     fun onFileSelected(uri: Uri) {
         stopPlaybackInternal()
         selectedFileUri = uri
-
-        // Task 3.1: Clear result buffer from previous file selection
         resultBuffer.clear()
 
         val app = getApplication<Application>()
@@ -205,21 +210,23 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
                 if (c.moveToFirst()) {
                     val nameIdx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (nameIdx >= 0) c.getString(nameIdx) else null
-                } else null
+                } else {
+                    null
+                }
             } ?: uri.lastPathSegment ?: ""
         } catch (e: Exception) {
             Log.w(TAG, "Failed to resolve display name: ${e.message}")
             uri.lastPathSegment ?: ""
         }
 
-        // Task 3.1: Update state with new file name and clear previous results
-        // Ensures multiple file selections don't mix results (Requirements: 1, 3)
-        _uiState.update { it.copy(
-            selectedFileName = fileName,
-            isPlaying = false,
-            partialText = "",      // Clear partial text from previous recognition
-            messages = emptyList()  // Clear messages to prevent result mixing
-        ) }
+        _uiState.update {
+            it.copy(
+                selectedFileName = fileName,
+                isPlaying = false,
+                partialText = "",
+                messages = emptyList()
+            )
+        }
     }
 
     fun togglePlayback() {
@@ -264,7 +271,15 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
                 prepare()
                 start()
             }
-            _uiState.update { it.copy(isPlaying = true) }
+            val duration = mediaPlayer?.duration ?: 0
+            _uiState.update { it.copy(isPlaying = true, playbackDurationMs = duration, playbackPositionMs = 0) }
+            playbackPollingJob = viewModelScope.launch {
+                while (_uiState.value.isPlaying) {
+                    val pos = mediaPlayer?.currentPosition ?: 0
+                    _uiState.update { it.copy(playbackPositionMs = pos) }
+                    delay(250)
+                }
+            }
         }.onFailure { e ->
             Log.e(TAG, "Failed to start playback: ${e.message}", e)
             stopPlaybackInternal()
@@ -275,6 +290,8 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun stopPlaybackInternal() {
+        playbackPollingJob?.cancel()
+        playbackPollingJob = null
         runCatching {
             mediaPlayer?.stop()
         }
@@ -282,7 +299,12 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
             mediaPlayer?.release()
         }
         mediaPlayer = null
-        _uiState.update { it.copy(isPlaying = false) }
+        _uiState.update { it.copy(isPlaying = false, playbackPositionMs = 0) }
+    }
+
+    fun seekTo(positionMs: Int) {
+        mediaPlayer?.seekTo(positionMs)
+        _uiState.update { it.copy(playbackPositionMs = positionMs) }
     }
 
     fun startRecognition() {
@@ -304,7 +326,6 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
 
         val uri = selectedFileUri!!
         val app = getApplication<Application>()
-
         val runId = ++runCounter
 
         _uiState.update { state -> markRecognitionStarted(state) }
@@ -332,7 +353,6 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
                 tempWavFile = withContext(Dispatchers.IO) {
                     createTempPcmFile(app, uri)
                 }
-                Log.d(TAG, "startRecognition[$runId]: temp pcm bytes=${tempWavFile.length()}")
                 val pipe = ParcelFileDescriptor.createPipe()
                 readFd = pipe[0]
                 writeFd = pipe[1]
@@ -391,20 +411,225 @@ class FileToTtsViewModel(application: Application) : AndroidViewModel(applicatio
                 runCatching { writeFd?.close() }
                 runCatching { speechRecognizer.stopRecognition() }
                 runCatching { speechRecognizer.close() }
-                runCatching {
-                    val deleted = tempWavFile?.delete() ?: true
-                    Log.d(TAG, "startRecognition[$runId]: temp pcm deleted=$deleted")
-                }
-                Log.d(TAG, "startRecognition[$runId]: recognizer closed")
+                runCatching { tempWavFile?.delete() }
                 _uiState.update { it.copy(isProcessing = false, isRecognizing = false) }
                 recognitionJob = null
             }
         }
     }
 
+    private suspend fun recognizeFileToText(
+        uri: Uri,
+        onPartial: (String) -> Unit = {},
+        onFinalText: (String) -> Unit = {}
+    ): String {
+        val app = getApplication<Application>()
+        var tempWavFile: File? = null
+        var readFd: ParcelFileDescriptor? = null
+        var writeFd: ParcelFileDescriptor? = null
+        var streamJob: Job? = null
+        val speechRecognizer = createSpeechRecognizer(currentLocaleTag)
+        val resultBuilder = StringBuilder()
+
+        try {
+            val ready = ensureRecognizerReady(speechRecognizer, 0)
+            if (!ready) {
+                throw IllegalStateException("Speech feature is not available yet. Please retry in a few moments.")
+            }
+
+            tempWavFile = withContext(Dispatchers.IO) {
+                createTempPcmFile(app, uri)
+            }
+            val pipe = ParcelFileDescriptor.createPipe()
+            readFd = pipe[0]
+            writeFd = pipe[1]
+
+            streamJob = viewModelScope.launch(Dispatchers.IO) {
+                streamPcmFileToPipe(tempWavFile, writeFd)
+            }
+
+            val request = SpeechRecognizerRequest.Builder().apply {
+                audioSource = AudioSource.fromPfd(readFd)
+            }.build()
+
+            speechRecognizer.startRecognition(request).collect { response ->
+                when (response) {
+                    is SpeechRecognizerResponse.PartialTextResponse -> onPartial(response.text)
+                    is SpeechRecognizerResponse.FinalTextResponse -> {
+                        resultBuilder.append(response.text)
+                        onFinalText(response.text)
+                        onPartial("")
+                    }
+
+                    is SpeechRecognizerResponse.ErrorResponse -> {
+                        Log.e(TAG, "Recognition ErrorResponse: ${response.e.message}", response.e)
+                        throw response.e
+                    }
+
+                    is SpeechRecognizerResponse.CompletedResponse -> Unit
+                }
+            }
+        } finally {
+            streamJob?.cancel()
+            runCatching { readFd?.close() }
+            runCatching { writeFd?.close() }
+            runCatching { speechRecognizer.stopRecognition() }
+            runCatching { speechRecognizer.close() }
+            runCatching { tempWavFile?.delete() }
+        }
+
+        return resultBuilder.toString()
+    }
+
+    fun startBatchRecognition(directoryUri: Uri) {
+        if (batchJob != null || recognitionJob != null) return
+
+        if (_uiState.value.isPlaying) {
+            stopPlaybackInternal()
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            viewModelScope.launch { _events.emit(FileToTtsUiEvent.UnsupportedVersion) }
+            return
+        }
+
+        val app = getApplication<Application>()
+        val dir = DocumentFile.fromTreeUri(app, directoryUri)
+        if (dir == null || !dir.isDirectory) {
+            viewModelScope.launch { _events.emit(FileToTtsUiEvent.NoBatchAudioFiles) }
+            return
+        }
+
+        val audioExtensions = setOf("mp3", "m4a", "wav", "ogg", "flac", "aac")
+        val audioFiles = dir.listFiles().filter { file ->
+            val mimeOk = file.type?.startsWith("audio/") == true
+            val extOk = file.name?.substringAfterLast('.', "")?.lowercase() in audioExtensions
+            mimeOk || extOk
+        }
+
+        if (audioFiles.isEmpty()) {
+            viewModelScope.launch { _events.emit(FileToTtsUiEvent.NoBatchAudioFiles) }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                isBatchProcessing = true,
+                batchTotalFiles = audioFiles.size,
+                batchProcessedCount = 0,
+                batchCurrentFileName = "",
+                batchCurrentText = ""
+            )
+        }
+
+        batchJob = viewModelScope.launch {
+            val results = mutableListOf<Pair<String, String>>()
+            try {
+                audioFiles.forEachIndexed { index, file ->
+                    val fileName = file.name ?: "file_${index + 1}"
+                    _uiState.update {
+                        it.copy(
+                            batchCurrentFileName = fileName,
+                            batchCurrentText = "",
+                            batchProcessedCount = index + 1
+                        )
+                    }
+
+                    val text = try {
+                        recognizeFileToText(
+                            file.uri,
+                            onPartial = { partial ->
+                                _uiState.update { state -> state.copy(batchCurrentText = partial) }
+                            }
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error recognizing $fileName: ${e.message}", e)
+                        "[Failed: ${e.message}]"
+                    }
+                    results.add(fileName to text)
+                }
+
+                val timestamp = SimpleDateFormat("yyyyMMddHHmmss", Locale.US).format(Date())
+                val outputDir = app.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: app.filesDir
+                val jsonPath = saveAsJson(outputDir, timestamp, results)
+                val csvPath = saveAsCsv(outputDir, timestamp, results)
+                _events.emit(FileToTtsUiEvent.BatchCompleted(jsonPath, csvPath))
+            } catch (_: CancellationException) {
+                Log.d(TAG, "Batch recognition cancelled")
+            } catch (e: Exception) {
+                Log.e(TAG, "Batch processing error: ${e.message}", e)
+                _events.emit(FileToTtsUiEvent.ShowError(e.message ?: ""))
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isBatchProcessing = false,
+                        batchCurrentFileName = "",
+                        batchCurrentText = ""
+                    )
+                }
+                batchJob = null
+            }
+        }
+    }
+
+    private fun saveAsJson(
+        outputDir: File,
+        timestamp: String,
+        results: List<Pair<String, String>>
+    ): String {
+        val sortedResults = sortResultsByFileName(results)
+        val array = JSONArray()
+        sortedResults.forEach { (fileName, text) ->
+            array.put(
+                JSONObject().apply {
+                    put("fileName", fileName)
+                    put("text", text)
+                }
+            )
+        }
+        val file = File(outputDir, "transcription_$timestamp.json")
+        file.writeText(array.toString(2), Charsets.UTF_8)
+        return file.absolutePath
+    }
+
+    private fun saveAsCsv(
+        outputDir: File,
+        timestamp: String,
+        results: List<Pair<String, String>>
+    ): String {
+        val sortedResults = sortResultsByFileName(results)
+        val file = File(outputDir, "transcription_$timestamp.csv")
+        file.bufferedWriter(Charsets.UTF_8).use { writer ->
+            writer.write("fileName,text")
+            writer.newLine()
+            sortedResults.forEach { (fileName, text) ->
+                writer.write("${csvEscape(fileName)},${csvEscape(text)}")
+                writer.newLine()
+            }
+        }
+        return file.absolutePath
+    }
+
+    private fun sortResultsByFileName(results: List<Pair<String, String>>): List<Pair<String, String>> {
+        return results.sortedWith(
+            compareBy<Pair<String, String>> { it.first.lowercase(Locale.ROOT) }
+                .thenBy { it.first }
+        )
+    }
+
+    private fun csvEscape(value: String): String {
+        val escaped = value.replace("\"", "\"\"")
+        return if (escaped.contains(',') || escaped.contains('"') || escaped.contains('\n')) {
+            "\"$escaped\""
+        } else {
+            escaped
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         recognitionJob?.cancel()
+        batchJob?.cancel()
         stopPlaybackInternal()
     }
 }
