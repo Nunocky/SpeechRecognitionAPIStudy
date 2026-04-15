@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  package="org.nunocky.flutter_genai_mlkit_speech_recognition">
+</manifest>
